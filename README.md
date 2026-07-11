@@ -2,77 +2,89 @@
 
 ![Status](https://img.shields.io/badge/Status-Active-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-blue)
-![Python](https://img.shields.io/badge/Python-3.12-blue)
+![Python](https://img.shields.io/badge/Python-3.13-blue)
 ![GitHub Actions](https://img.shields.io/badge/Automation-GitHub--Actions-blueviolet)
 
-**GV-Pulse** is an automated utility designed to prevent Google Voice numbers from expiring due to inactivity. It uses the Gmail SMTP service to send periodic text messages via the official Google Voice SMS gateway, simulating active usage with zero maintenance.
+**GV-Pulse** is an automated utility that prevents Google Voice numbers from expiring due to inactivity. It uses Gmail SMTP to send a monthly text message via the official Google Voice SMS gateway, simulating active usage with zero maintenance.
+
+---
 
 ## ✨ Features
 
-- **Automated Pulse**: Sends a monthly SMS to maintain your number's active status.
-- **Repository Keep-Alive**: Automatically commits to `keepalive.log` after each run to prevent GitHub from disabling the workflow due to repository inactivity.
-- **Ultra-Lightweight**: No heavy dependencies; runs entirely on GitHub's free-tier runners.
-- **Private & Secure**: Uses GitHub Secrets to protect your sensitive credentials.
+- **Automated Pulse** — Sends a monthly SMS to keep your number active.
+- **Multi-Number Support** — Maintain any number of GV numbers with a single workflow run via a comma-separated gateway list.
+- **Retry Logic with Backoff** — Automatically retries transient SMTP failures (up to 5 attempts per gateway) with exponential backoff and jitter, so a bad network blip doesn't hammer Gmail's servers.
+- **Shared SMTP Session** — Authenticates once per run and reuses the connection across all gateways instead of reconnecting for each number.
+- **Repository Keep-Alive** — Commits to `keepalive.log` after every run so GitHub never disables the scheduled workflow due to inactivity.
+- **Ultra-Lightweight** — No third-party dependencies; runs entirely on GitHub's free-tier runners.
+- **Private & Secure** — All credentials live in GitHub Secrets.
+
+---
 
 ## 🏗️ How It Works
 
-1. **Activity Logic**: The Python script sends an email through your Gmail account addressed to a specific Google Voice SMS gateway address (`@txt.voice.google.com`). This is processed by Google as an outgoing SMS from your GV number.
-2. **Workflow Retention**: GitHub Actions normally disables scheduled workflows if the repository has no activity for 60 days. This bot bypasses that by updating a log file automatically during every run.
+1. The Python script authenticates with Gmail SMTP and sends an email to an address ending in `@txt.voice.google.com`. Google routes this as an outgoing SMS from your GV number.
+2. After a successful send the workflow commits a timestamped entry to `keepalive.log` on the `logs` branch, preventing GitHub from auto-disabling the Action after 60 days of inactivity.
+3. If `GV_GATEWAYS` contains multiple comma-separated addresses, every number is pulsed in the same run, reusing one authenticated SMTP session. Any number that fails is retried on its own with backoff.
+
+---
 
 ## 🚀 Quick Start: Fork & Activate
 
-Follow these steps to set up your own automated pulse in under 5 minutes:
-
 ### 1. Fork this Repository
-Click the **Fork** button at the top-right of this page to create a copy of this project in your own GitHub account.
+Click **Fork** at the top-right of this page.
 
 ### 2. Enable GitHub Actions
-By default, GitHub disables Actions on forked repositories. 
-- Navigate to the **Actions** tab in your forked repo.
-- Click the green button: **"I understand my workflows, go ahead and enable them"**.
+GitHub disables Actions on forks by default.
+- Go to the **Actions** tab in your fork.
+- Click **"I understand my workflows, go ahead and enable them"**.
 
 ### 3. Add Your Secrets
-Go to `Settings > Secrets and variables > Actions` and click **New repository secret** to add the three required variables:
-* `GMAIL_USER`: Your Gmail address.
-* `GMAIL_PASSWORD`: Your 16-character App Password.
-* `GV_GATEWAY`: The `@txt.voice.google.com` recipient address.
+`Settings > Secrets and variables > Actions > New repository secret`
+
+| Secret Name     | Required | Description |
+| :-------------- | :------- | :---------- |
+| `GMAIL_USER`    | ✅ Yes   | Your full Gmail address |
+| `GMAIL_PASSWORD`| ✅ Yes   | Your 16-character Gmail App Password |
+| `GV_GATEWAYS`   | ✅ Yes   | One or more `<number>@txt.voice.google.com` addresses, comma-separated (e.g. `5551234567@txt.voice.google.com,5559876543@txt.voice.google.com`) |
 
 ### 4. Grant Write Permissions
-To allow the bot to update `keepalive.log`, you must give the workflow write access:
-- Go to `Settings > Actions > General`.
-- Scroll down to **Workflow permissions**.
-- Select **Read and write permissions** and click **Save**.
+- `Settings > Actions > General > Workflow permissions`
+- Select **Read and write permissions** → **Save**.
 
 ### 5. Manual Test (Optional)
-To verify everything works immediately:
-- Go to the **Actions** tab.
-- Select the **GV-Pulse** workflow on the left.
-- Click the **Run workflow** dropdown and trigger it manually.
+- **Actions** tab → **GV-Pulse Keep-Alive** → **Run workflow**.
 
-## 🛠️ Setup Instructions
+---
 
-### 1. Prerequisites
-- **Gmail App Password**: Generate a 16-character **App Password** from your Google Account security settings (Standard login passwords will not work).
-- **Target Gateway Address**: Send a text message from any mobile number to your Google Voice number. Reply to that message via Gmail and look for the recipient address ending in `@txt.voice.google.com`.
+## 🛠️ Prerequisites
 
-### 2. Configure GitHub Secrets
-Go to your repository `Settings > Secrets and variables > Actions` and add the following:
+### Gmail App Password
+Standard passwords won't work. Generate a 16-character **App Password** in  
+`Google Account > Security > 2-Step Verification > App passwords`.
 
-| Secret Name | Description |
-| :--- | :--- |
-| `GMAIL_USER` | Your full Gmail address |
-| `GMAIL_PASSWORD` | The 16-character Gmail App Password |
-| `GV_GATEWAY` | The target `@txt.voice.google.com` address |
+### Finding Your SMS Gateway Address
+Send any SMS *to* your GV number from another phone. Reply via Gmail and inspect the `To:` field — it will end in `@txt.voice.google.com`. That full address is your gateway.
 
-### 3. Workflow Schedule
-- **Default Frequency**: Runs at **00:00 UTC on the 1st of every month**.
-- To change the timing, modify the `cron` expression in `.github/workflows/main.yml`.
+---
+
+## ⏰ Schedule
+
+The workflow runs at **09:45 UTC on the 1st of every month** by default.  
+To change the frequency, edit the `cron` value in `.github/workflows/main.yml`.
+
+---
 
 ## 📝 Execution Logs
-Check the [keepalive.log](./keepalive.log) file for a history of successful operations.
+
+Timestamped run history is stored in [`keepalive.log`](../../tree/logs/keepalive.log) on the `logs` branch.
+
+---
 
 ## 📜 Disclaimer
+
 This project is for personal use only. Use it responsibly and in accordance with Google's Terms of Service.
 
 ## ⚖️ License
-Distributed under the MIT License.
+
+Distributed under the [MIT License](LICENSE).

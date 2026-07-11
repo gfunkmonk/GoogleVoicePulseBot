@@ -1,50 +1,49 @@
-name: Google Voice Keep Alive & Auto Log
+name: GV-Pulse Keep-Alive
 
 on:
   schedule:
-    # Runs at 00:00 UTC on the 1st of every month (08:00 Beijing Time)
-    - cron: '0 0 1 * *'
-  workflow_dispatch: # Allows manual triggering for testing
+    # Runs at 09:45 UTC on the 1st of every month
+    - cron: '45 9 1 * *'
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  keep-alive-job:
+  keep-alive:
     runs-on: ubuntu-latest
-    
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v7
         with:
-          fetch-depth: 0 # Fetches full history to allow branch switching
+          fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
-          python-version: '3.10'
+          python-version: '3.13'
 
-      - name: Run Python Script (Send SMS)
+      - name: Send keep-alive SMS(es)
         env:
-          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_USER:     ${{ secrets.GMAIL_USER }}
           GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
-          GV_GATEWAY: ${{ secrets.GV_GATEWAY }}
+          GV_GATEWAYS:    ${{ secrets.GV_GATEWAYS }}
         run: python main.py
 
-      - name: Update Log and Push to Separate Branch
+      - name: Update keep-alive log
         run: |
-          # 1. Configure Git Identity
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          
-          # 2. Create or switch to the 'logs' branch
-          # This ensures that log updates don't clutter the main branch for forkers
+          git config --local user.name  "github-actions[bot]"
+
+          # Switch to (or create) the dedicated logs branch
           git checkout logs 2>/dev/null || git checkout -b logs
-          
-          # 3. Update the log file
-          echo "Run at $(date -u) UTC" >> keepalive.log
-          
-          # 4. Commit and Push to the 'logs' branch specifically
+
+          echo "$(date -u '+%Y-%m-%d %H:%M:%S') UTC — keep-alive run" >> keepalive.log
+
           git add keepalive.log
-          git commit -m "chore: update keepalive log [skip ci]" || echo "No changes to commit"
+          git diff --cached --quiet \
+            && echo "Nothing to commit." \
+            || git commit -m "chore: keepalive log [skip ci]"
+
           git push origin logs
