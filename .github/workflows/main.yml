@@ -24,7 +24,7 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Send keep-alive SMS(es)
+      - name: Send keep-alive SMS
         env:
           GMAIL_USER:     ${{ secrets.GMAIL_USER }}
           GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
@@ -39,8 +39,8 @@ jobs:
           # Switch to (or create) the dedicated logs branch
           git checkout logs 2>/dev/null || git checkout -b logs
 
-          echo "$(date -u '+%Y-%m-%d %H:%M:%S') UTC — keep-alive run" >> keepalive.log
-
+          echo "$(TZ=':America/New_York' date '+%m-%d-%Y %I:%M:%S %p %Z') — keep-alive run" >> keepalive.log
+          
           git add keepalive.log
           git diff --cached --quiet \
             && echo "Nothing to commit." \
