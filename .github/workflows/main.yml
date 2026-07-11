@@ -31,6 +31,13 @@ jobs:
           GV_GATEWAYS:    ${{ secrets.GV_GATEWAYS }}
         run: python main.py
 
+      - name: Send keep-alive SMS 2
+        env:
+          GMAIL_USER:     ${{ secrets.GMAIL_USER2 }}
+          GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD2 }}
+          GV_GATEWAYS:    ${{ secrets.GV_GATEWAYS2 }}
+        run: python main.py
+
       - name: Update keep-alive log
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
