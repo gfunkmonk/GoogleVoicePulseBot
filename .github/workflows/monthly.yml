@@ -1,0 +1,54 @@
+name: Google Voice Monthly SMS
+
+on:
+  schedule:
+    - cron: '0 15 1 * *'
+  workflow_dispatch:
+
+jobs:
+  send_sms:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Playwright
+        run: |
+          npm init -y
+          npm install playwright
+          npx playwright install chromium
+
+      - name: Create script
+        run: |
+          cat > send.js << 'EOF'
+          const { chromium } = require('playwright');
+
+          (async () => {
+            const browser = await chromium.launch({ headless: true });
+            const context = await browser.newContext({
+              storageState: 'state.json'
+            });
+
+            const page = await context.newPage();
+            await page.goto('https://voice.google.com');
+
+            await page.click('text=Send a message');
+            await page.fill('input[aria-label="Type a name or phone number"]', process.env.TO_NUMBER);
+            await page.keyboard.press('Enter');
+            await page.fill('div[aria-label="Type a message"]', 'monthly activity');
+            await page.keyboard.press('Enter');
+
+            await browser.close();
+          })();
+          EOF
+
+      - name: Run script
+        env:
+          TO_NUMBER: ${{ secrets.TO_NUMBER }}
+        run: node send.js
