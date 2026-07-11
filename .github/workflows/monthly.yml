@@ -24,12 +24,28 @@ jobs:
           npm install playwright
           npx playwright install chromium
 
+      - name: Restore storage state
+        env:
+          PLAYWRIGHT_STORAGE_STATE: ${{ secrets.PLAYWRIGHT_STORAGE_STATE }}
+        run: |
+          if [ -n "$PLAYWRIGHT_STORAGE_STATE" ]; then
+            printf '%s' "$PLAYWRIGHT_STORAGE_STATE" > state.json
+          else
+            echo "PLAYWRIGHT_STORAGE_STATE is not configured. Skipping send."
+          fi
+
       - name: Create script
         run: |
           cat > send.js << 'EOF'
           const { chromium } = require('playwright');
+          const { existsSync } = require('node:fs');
 
           (async () => {
+            if (!existsSync('state.json')) {
+              console.log('state.json not found; skipping send.');
+              return;
+            }
+
             const browser = await chromium.launch({ headless: true });
             const context = await browser.newContext({
               storageState: 'state.json'
