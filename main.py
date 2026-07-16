@@ -94,6 +94,8 @@ def send_all(username: str, password: str, recipients: list[str]) -> list[bool]:
                         still_pending.append((idx, recipient))
         except smtplib.SMTPAuthenticationError:
             log.error("Authentication failed — check GMAIL_USER / GMAIL_PASSWORD.")
+            for idx, recipient in pending:
+                log.error("Skipped %s: authentication failed", recipient)
             return results  # No point retrying a credential error
         except (smtplib.SMTPException, OSError) as exc:
             log.warning(
