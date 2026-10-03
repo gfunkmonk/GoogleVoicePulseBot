@@ -11,6 +11,7 @@ Exit code is 0 if every send succeeded, 1 otherwise.
 import logging
 import os
 import random
+import re
 import smtplib
 import sys
 import time
@@ -55,6 +56,21 @@ def mask(address: str) -> str:
     return f"***{local[-4:]}@{domain}"
 
 
+def redact(value: object, addresses: list[str]) -> str:
+    """
+    Stringify *value* (e.g. an SMTP reason or exception) with every gateway
+    address, and its bare phone number, masked. Servers can echo the recipient
+    back in error text, which would otherwise leak into public CI logs.
+    """
+    text = value.decode(errors="replace") if isinstance(value, bytes) else str(value)
+    for addr in addresses:
+        local = addr.partition("@")[0]
+        text = re.sub(re.escape(addr), lambda _, a=addr: mask(a), text, flags=re.IGNORECASE)
+        if local:
+            text = re.sub(re.escape(local), lambda _, n=local: f"***{n[-4:]}", text)
+    return text
+
+
 def parse_gateways(raw: str) -> list[str]:
     """Split a comma-separated list, dropping blanks and duplicates, keeping order."""
     return list(dict.fromkeys(addr.strip() for addr in raw.split(",") if addr.strip()))
@@ -96,8 +112,9 @@ def send_all(username: str, password: str, recipients: list[str]) -> list[str]:
                     try:
                         server.send_message(build_message(username, recipient))
                     except smtplib.SMTPRecipientsRefused as exc:
-                        # exc.recipients holds the raw address; log only code + reason.
+                        # exc.recipients is keyed by the raw address; use only code + reason.
                         code, reason = next(iter(exc.recipients.values()))
+                        reason = redact(reason, recipients)
                         if code >= 500:
                             log.error("%s permanently rejected: %s %s",
                                       mask(recipient), code, reason)
@@ -109,7 +126,8 @@ def send_all(username: str, password: str, recipients: list[str]) -> list[str]:
                         raise  # session is dead; reconnect instead of failing every remaining send
                     except smtplib.SMTPException as exc:
                         log.warning("Send to %s failed on attempt %d/%d: %s",
-                                    mask(recipient), attempt, MAX_RETRIES, exc)
+                                    mask(recipient), attempt, MAX_RETRIES,
+                                    redact(exc, recipients))
                     else:
                         log.info("Sent to %s (attempt %d)", mask(recipient), attempt)
                         pending.remove(recipient)
@@ -118,7 +136,8 @@ def send_all(username: str, password: str, recipients: list[str]) -> list[str]:
             log.error("Authentication failed — check GMAIL_USER / GMAIL_PASSWORD.")
             break  # retrying a credential error is pointless
         except (smtplib.SMTPException, OSError) as exc:
-            log.warning("Connection error on attempt %d/%d: %s", attempt, MAX_RETRIES, exc)
+            log.warning("Connection error on attempt %d/%d: %s",
+                        attempt, MAX_RETRIES, redact(exc, recipients))
 
         if not pending:
             break
