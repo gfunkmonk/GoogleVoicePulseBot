@@ -1,17 +1,24 @@
-import smtplib
+"""GV-Pulse: keep Google Voice numbers alive by texting them via the Gmail SMTP gateway.
+
+Required env vars:
+    GMAIL_USER      Gmail address used to send
+    GMAIL_PASSWORD  Gmail App Password (16 chars)
+    GV_GATEWAYS     Comma-separated <number>@txt.voice.google.com addresses
+
+Exit code is 0 if every send succeeded, 1 otherwise.
+"""
+
+import logging
 import os
 import random
+import smtplib
 import sys
 import time
-import logging
-from email.mime.text import MIMEText
-from email.utils import make_msgid, formatdate
 from datetime import datetime
+from email.message import EmailMessage
+from email.utils import formatdate, make_msgid
 from zoneinfo import ZoneInfo
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -19,17 +26,15 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 465
-SMTP_TIMEOUT = 30          # seconds — avoid hanging forever on a stalled connection
+SMTP_TIMEOUT = 30  # seconds; don't hang forever on a stalled connection
 MAX_RETRIES = 5
-BASE_BACKOFF = 5           # seconds — doubles each retry, capped below
+BASE_BACKOFF = 5   # seconds; doubles each retry
 MAX_BACKOFF = 60
+TIMEZONE = ZoneInfo("America/New_York")
 
-MESSAGES = [
+MESSAGES = (
     "Update: System is running smoothly.",
     "Reminder: Keep active and stay connected.",
     "Monthly check-in: Hello world!",
@@ -41,130 +46,111 @@ MESSAGES = [
     "Log: Scheduled activity ping sent.",
     "Alert: No action needed, just staying active.",
     "Sync: Connection verified and stable.",
-]
+)
 
 
-def build_message(sender: str, recipient: str) -> MIMEText:
+def mask(address: str) -> str:
+    """Hide most of a gateway address so phone numbers don't land in public CI logs."""
+    local, _, domain = address.partition("@")
+    return f"***{local[-4:]}@{domain}"
+
+
+def parse_gateways(raw: str) -> list[str]:
+    """Split a comma-separated list, dropping blanks and duplicates, keeping order."""
+    return list(dict.fromkeys(addr.strip() for addr in raw.split(",") if addr.strip()))
+
+
+def build_message(sender: str, recipient: str) -> EmailMessage:
     """Compose the keep-alive SMS payload."""
-    now = datetime.now(ZoneInfo("America/New_York"))
-    body = (
-        f"{random.choice(MESSAGES)} | "
-        f"{now.strftime('%m-%d-%Y %I:%M %p %Z')}"
-    )
-    msg = MIMEText(body)
+    now = datetime.now(TIMEZONE)
+    msg = EmailMessage()
     msg["Subject"] = "GV Ping"
     msg["From"] = sender
     msg["To"] = recipient
     msg["Date"] = formatdate(localtime=True)
-    msg["Message-ID"] = make_msgid()
+    msg["Message-ID"] = make_msgid(domain=sender.rpartition("@")[2] or None)
+    msg.set_content(f"{random.choice(MESSAGES)} | {now:%m-%d-%Y %I:%M %p %Z}")
     return msg
 
 
-def send_all(username: str, password: str, recipients: list[str]) -> list[bool]:
-    """
-    Send a keep-alive message to every recipient, reusing a single
-    authenticated SMTP session where possible. Falls back to reconnecting
-    if the session drops mid-run.
+def backoff_delay(attempt: int) -> float:
+    """Exponential backoff (capped) plus jitter so retries don't run in lockstep."""
+    return min(BASE_BACKOFF * 2 ** (attempt - 1), MAX_BACKOFF) + random.uniform(0, 1)
 
-    Returns a list of per-recipient success flags, in the same order as
-    *recipients*.
+
+def send_all(username: str, password: str, recipients: list[str]) -> list[str]:
     """
-    results = [False] * len(recipients)
-    pending = list(enumerate(recipients))  # (index, recipient) pairs left to send
+    Send a keep-alive to every recipient over one authenticated SMTP session,
+    reconnecting (and resending only what's left) if the session drops.
+
+    Returns the recipients that were NOT delivered; empty means full success.
+    """
+    pending = list(recipients)
+    sent: set[str] = set()
 
     for attempt in range(1, MAX_RETRIES + 1):
-        if not pending:
-            break
-
-        still_pending = []
         try:
             with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT) as server:
                 server.login(username, password)
-                for idx, recipient in pending:
-                    msg = build_message(username, recipient)
+                for recipient in pending.copy():
                     try:
-                        server.sendmail(username, [recipient], msg.as_string())
-                        log.info("Sent to %s (attempt %d)", recipient, attempt)
-                        results[idx] = True
+                        server.send_message(build_message(username, recipient))
+                    except smtplib.SMTPRecipientsRefused as exc:
+                        # exc.recipients holds the raw address; log only code + reason.
+                        code, reason = next(iter(exc.recipients.values()))
+                        if code >= 500:
+                            log.error("%s permanently rejected: %s %s",
+                                      mask(recipient), code, reason)
+                            pending.remove(recipient)  # retrying can't help
+                            continue
+                        log.warning("%s refused on attempt %d/%d: %s %s",
+                                    mask(recipient), attempt, MAX_RETRIES, code, reason)
+                    except smtplib.SMTPServerDisconnected:
+                        raise  # session is dead; reconnect instead of failing every remaining send
                     except smtplib.SMTPException as exc:
-                        log.warning(
-                            "Send to %s failed on attempt %d/%d: %s",
-                            recipient, attempt, MAX_RETRIES, exc,
-                        )
-                        still_pending.append((idx, recipient))
+                        log.warning("Send to %s failed on attempt %d/%d: %s",
+                                    mask(recipient), attempt, MAX_RETRIES, exc)
+                    else:
+                        log.info("Sent to %s (attempt %d)", mask(recipient), attempt)
+                        pending.remove(recipient)
+                        sent.add(recipient)
         except smtplib.SMTPAuthenticationError:
             log.error("Authentication failed — check GMAIL_USER / GMAIL_PASSWORD.")
-            for idx, recipient in pending:
-                log.error("Skipped %s: authentication failed", recipient)
-            return results  # No point retrying a credential error
+            break  # retrying a credential error is pointless
         except (smtplib.SMTPException, OSError) as exc:
-            log.warning(
-                "Connection error on attempt %d/%d: %s", attempt, MAX_RETRIES, exc
-            )
-            still_pending = pending  # nothing got sent this round
+            log.warning("Connection error on attempt %d/%d: %s", attempt, MAX_RETRIES, exc)
 
-        pending = still_pending
-        if pending and attempt < MAX_RETRIES:
-            backoff = min(BASE_BACKOFF * (2 ** (attempt - 1)), MAX_BACKOFF)
-            backoff += random.uniform(0, 1)  # small jitter to avoid lockstep retries
-            log.info("Retrying %d recipient(s) in %.1fs…", len(pending), backoff)
-            time.sleep(backoff)
+        if not pending:
+            break
+        if attempt < MAX_RETRIES:
+            delay = backoff_delay(attempt)
+            log.info("Retrying %d recipient(s) in %.1fs…", len(pending), delay)
+            time.sleep(delay)
 
-    for idx, recipient in pending:
-        log.error("All %d attempts failed for %s", MAX_RETRIES, recipient)
-
-    return results
+    return [r for r in recipients if r not in sent]
 
 
 def main() -> int:
-    """
-    Entry point.  Reads credentials from environment variables and sends a
-    keep-alive message to every configured GV gateway.
-
-    Required env vars:
-        GMAIL_USER      – Gmail address used to send
-        GMAIL_PASSWORD  – Gmail App Password (16 chars)
-
-    Gateway env vars (at least one required):
-        GV_GATEWAYS     – comma-separated list of @txt.voice.google.com
-                           addresses, e.g. "5551234567@txt.voice.google.com,..."
-
-    Returns exit code 0 on full success, 1 if any send failed.
-    """
     username = os.environ.get("GMAIL_USER", "").strip()
     password = os.environ.get("GMAIL_PASSWORD", "").strip()
-
     if not username or not password:
         log.error("GMAIL_USER and GMAIL_PASSWORD must be set.")
         return 1
 
-    # Collect all configured gateways from every supported source, skipping
-    # blanks, and de-duping while preserving order.
-    raw = os.environ.get("GV_GATEWAYS", "").split(",")
-
-    seen = set()
-    recipients = []
-    for entry in raw:
-        addr = entry.strip()
-        if addr and addr not in seen:
-            seen.add(addr)
-            recipients.append(addr)
-
+    recipients = parse_gateways(os.environ.get("GV_GATEWAYS", ""))
     if not recipients:
-        log.error(
-            "No gateway configured. Set GV_GATEWAYS (comma-separated)"
-        )
+        log.error("No gateway configured. Set GV_GATEWAYS (comma-separated).")
         return 1
 
     log.info("Sending keep-alive to %d gateway(s)…", len(recipients))
-    results = send_all(username, password, recipients)
+    failed = send_all(username, password, recipients)
 
-    failures = results.count(False)
-    if failures:
-        log.error("%d/%d sends failed.", failures, len(results))
+    if failed:
+        log.error("%d/%d sends failed: %s",
+                  len(failed), len(recipients), ", ".join(map(mask, failed)))
         return 1
 
-    log.info("All %d send(s) successful.", len(results))
+    log.info("All %d send(s) successful.", len(recipients))
     return 0
 
 
